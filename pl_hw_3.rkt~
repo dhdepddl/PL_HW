@@ -78,47 +78,56 @@
 ;takes WAE and produces a list of all symbols in the given WAE
 ;allow duplicate and not sorted
 (define (all-ids wae)
-  (cond
-    [(not (WAE? wae)) (error 'all-ids "Wrong type - not WAE: ~a" wae)]
-    [else
-     (type-case WAE wae
-       [num (n) empty]
-       [add (l r) (list* (append (all-ids l) (all-ids r)))]
-       [sub (l r) (list* (append (all-ids l) (all-ids r)))]
-       [with (x i b)
-             (cons x (list* (append (all-ids i) (all-ids b))))]
-       [id (s) (list s)])]))
+  (type-case WAE wae
+    [num (n) empty]
+    [add (l r) (list* (append (all-ids l) (all-ids r)))]
+    [sub (l r) (list* (append (all-ids l) (all-ids r)))]
+    [with (x i b)
+          (cons x (list* (append (all-ids i) (all-ids b))))]
+    [id (s) (list s)]))
 
 (test (all-ids (parse '{with {x {+ 3 4}} {- x 2}})) '(x x))
-(test/exn (all-ids {+ 3 1}) "Wrong type - not WAE: 4")
 
 
 ;symbol<? : symbol1 symbol2 -> boolean
 ;return true if string(symbol1) < string(symbol2)
 (define (symbol<? a b)
-  (cond 
-    [(or (not (symbol? a)) (not (symbol? b))) (error 'symbol<? "Wrong type")]
-    [else 
-     (string<? (symbol->string a) (symbol->string b))]))
+  (string<? (symbol->string a) (symbol->string b)))
 
 (test (symbol<? 'o 'b) #f)
-(test/exn (symbol<? 2 'n) "Wrong type")
 
 
 ;srt-rmdupl : list of symbol -> list of symbol
 ;takes list of symbol and produces a list of symbols
 ;with sorted order and removing duplicated symbols
 (define (srt-rmdupl l)
-  (cond
-    [(not (list? l)) (error 'srt-rmdupl "Wrong type - not list")]
-    [(not (= (length (filter symbol? l)) (length l))) (error 'srt-rmdupl "Wrong type - not list of symbol")]
-    [else 
-     (sort (remove-duplicates l) symbol<?)]))
+  (sort (remove-duplicates l) symbol<?))
 
-(test (srt-rmdupl '(p e d d w l p)) '(d e l p w))
-(test/exn (srt-rmdupl '(a 9 3 h)) "Wrong type - not list of symbol")
-(test/exn (srt-rmdupl '(1 4 2)) "Wrong type - not list of symbol")
-(test/exn (srt-rmdupl 3) "Wrong type - not list")
+
+
+;#1
+;free-ids : WAE -> list of symbol
+;takes WAE and produces a list of symbols for each free identifier in the given WAE
+;return error if the input value is not of type WAE
+(define (free-ids wae)
+  (cond
+    [(not (WAE? wae)) (error 'free-ids "Wrong type - not WAE: ~a" wae)]
+    [else
+     (type-case WAE wae
+       [num (n) empty]
+       [add (l r) (srt-rmdupl (list* (append (free-ids l) (free-ids r))))]
+       [sub (l r) (srt-rmdupl (list* (append (free-ids l) (free-ids r))))]
+       [with (x i b)
+             (srt-rmdupl (list* (append (free-ids i) (remove x (free-ids b)))))]
+       [id (s) (list s)])]))
+
+(test/exn (free-ids 3) "Wrong type - not WAE: 3")
+(test (free-ids (id 'x)) '(x))
+(test (free-ids (num 5)) empty)
+(test (free-ids (parse '{+ {- 3 {with {x 4} {+ y x}}} {with {a {+ x 3}} {- z {+ a x}}}})) '(x y z))
+(test (free-ids (parse '{with {x {with {y 5} {+ y x}}}
+                              {with {a {+ 3 4}}
+                                    {+ a x}}})) '(x))
 
 
 ;#2
@@ -143,11 +152,6 @@
 (test (binding-ids (parse '{with {x {with {y 5} {+ y x}}}
                               {with {a {+ 3 4}}
                                     {+ a x}}})) '(a x y))
-(test (binding-ids (parse '{with {z {+ 3 a}}
-                              {with {x {- 3 2}}
-                                    {with {x {with {y 3} {+ y y}}}
-                                          {+ a z}}}})) '(x y z))
-(test (binding-ids (parse '{with {x 4} {+ y y}})) '(x))
 
 
 ;#3
@@ -179,42 +183,4 @@
 (test (bound-ids (parse '{with {x
                                 {with {x 5} {+ 3 4}}} {- 5 2}})) '())
 (test (bound-ids (parse '{with {x {with {x 3} {+ x x}}} {- 7 2}})) '(x))
-(test (bound-ids (parse '{with {z {+ 3 a}}
-                              {with {x {- 3 2}}
-                                    {with {x {with {y 3} {+ y y}}}
-                                          {+ a z}}}})) '(y z))
-(test (bound-ids (parse '{with {x 4} {+ y y}})) '())
 
-
-
-;#1
-;free-ids : WAE -> list of symbol
-;takes WAE and produces a list of symbols for each free identifier in the given WAE
-;return error if the input value is not of type WAE
-(define (free-ids wae)
-  (cond
-    [(not (WAE? wae)) (error 'free-ids "Wrong type - not WAE: ~a" wae)]
-    [else
-     (type-case WAE wae
-       [num (n) empty]
-       [add (l r) (srt-rmdupl (list* (append (free-ids l) (free-ids r))))]
-       [sub (l r) (srt-rmdupl (list* (append (free-ids l) (free-ids r))))]
-       [with (x i b)
-             (cond
-               [(member x (remove* (binding-ids b) (all-ids b)))
-                (srt-rmdupl (list* (append (free-ids i) (remove x (free-ids b)))))]
-               [else (srt-rmdupl (list* (append (free-ids i) (cons x (free-ids b)))))])]
-       [id (s) (list s)])]))
-
-(test/exn (free-ids 3) "Wrong type - not WAE: 3")
-(test (free-ids (id 'x)) '(x))
-(test (free-ids (num 5)) empty)
-(test (free-ids (parse '{+ {- 3 {with {x 4} {+ y x}}} {with {a {+ x 3}} {- z {+ a x}}}})) '(x y z))
-(test (free-ids (parse '{with {x {with {y 5} {+ y x}}}
-                              {with {a {+ 3 4}}
-                                    {+ a x}}})) '(x))
-(test (free-ids (parse '{with {z {+ 3 a}}
-                              {with {x {- 3 2}}
-                                    {with {x {with {y 3} {+ y y}}}
-                                          {+ a z}}}})) '(a x))
-(test (free-ids (parse '{with {x 4} {+ y y}})) '(x y))
