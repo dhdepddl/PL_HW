@@ -1,0 +1,174 @@
+#lang plai
+
+(require (for-syntax racket/base) racket/match racket/list racket/string
+         (only-in mzlib/string read-from-string-all))
+
+;; build a regexp that matches restricted character expressions, can use only
+;; {}s for lists, and limited strings that use '...' (normal racket escapes
+;; like \n, and '' for a single ')
+(define good-char "(?:[ \t\r\na-zA-Z0-9_{}!?*/<=>:+-]|[.][.][.])")
+;; this would make it awkward for students to use \" for strings
+;; (define good-string "\"[^\"\\]*(?:\\\\.[^\"\\]*)*\"")
+(define good-string "[^\"\\']*(?:''[^\"\\']*)*")
+(define expr-re
+  (regexp (string-append "^"
+                         good-char"*"
+                         "(?:'"good-string"'"good-char"*)*"
+                         "$")))
+(define string-re
+  (regexp (string-append "'("good-string")'")))
+
+(define (string->sexpr str)
+  (unless (string? str)
+    (error 'string->sexpr "expects argument of type <string>"))
+    (unless (regexp-match expr-re str)
+      (error 'string->sexpr "syntax error (bad contents)"))
+    (let ([sexprs (read-from-string-all
+                 (regexp-replace*
+                  "''" (regexp-replace* string-re str "\"\\1\"") "'"))])
+    (if (= 1 (length sexprs))
+      (car sexprs)
+      (error 'string->sexpr "bad syntax (multiple expressions)"))))
+
+(test/exn (string->sexpr 1) "expects argument of type <string>")
+(test/exn (string->sexpr ".") "syntax error (bad contents)")
+(test/exn (string->sexpr "{} {}") "bad syntax (multiple expressions)")
+
+
+; FnWAE
+(define-type FnWAE
+  [num (n number?)]
+  [add (lhs FnWAE?)
+       (rhs FnWAE?)]
+  [sub (lhs FnWAE?)
+       (rhs FnWAE?)]
+  [id (name symbol?)]
+  [with (name symbol?)
+        (named-expr FnWAE?)
+        (body FnWAE?)]
+  [app (ftn symbol?)
+       (arg list?)])
+
+;FunDef
+(define-type FunDef
+  [fundef (fun-name symbol?)
+    (arg-name list?)
+    (body FnWAE?)])
+
+
+; uniq?: list-of-symbol -> bool
+(define (uniq? x)
+  (cond
+    [(not (list? x)) (error 'uniq? "Not a list")]
+    [(not (= (length (filter symbol? x)) (length x))) (error 'uniq? "Not a list of symbols")]
+    [else
+     (for/and ([i x]) (andmap (lambda (j) (not (symbol=? i j))) (remove i x)))]))
+
+(test (uniq? '(e r t f name fun)) #t)
+(test (uniq? '(e r t e)) #f)
+(test/exn (uniq? 3) "uniq?: Not a list")
+(test/exn (uniq? '(1 2 3)) "uniq?: Not a list of symbols")
+
+
+; parse-sexpr : sexp -> FnWAE
+(define (parse-sexpr sexp)
+  (match sexp
+    [(? number?) (num sexp)]
+    [(list '+ l r) (add (parse-sexpr l) (parse-sexpr r))]
+    [(list '- l r) (sub (parse-sexpr l) (parse-sexpr r))]
+    [(list 'with (list x i) b) (with x (parse-sexpr i) (parse-sexpr b))]
+    [(? symbol?) (id sexp)]
+    [(list f a ...) (app f (map parse-sexpr a))]
+    [else (error 'parse-sexpr "bad syntax: ~a" sexp)]))
+
+
+;; parses a string containing a WAE expression to a WAE AST
+(define (parse str)
+  (parse-sexpr (string->sexpr str)))
+
+(test (parse "{f 1 2}") (app 'f (list (num 1) (num 2))))
+(test (parse "{fun}") (app 'fun empty))
+
+
+; parse-defn : sexp -> FunDef
+(define (parse-defn sexp)
+  (match sexp
+    [(list 'deffun (list f x ...) body)
+     (unless (uniq? x)
+       (error 'parse-defn "bad syntax"))
+     (fundef f x (parse-sexpr body))]))
+
+(test (parse-defn '(deffun (f x y) (+ x y))) (fundef 'f '(x y) (add (id 'x) (id 'y))))
+(test/exn (parse-defn '(deffun (f x x) (+ x 2))) "parse-defn: bad syntax")
+
+
+
+; lookup-fundef : symbol list-of-FunDef -> FunDef
+(define (lookup-fundef name fundefs)
+  (cond
+    [(not (symbol? name)) (error 'lookup-fundef "Wrong type - not symbol: ~a" name)]
+    [(not (list? fundefs)) (error 'lookup-fundef "Wrong type - not list: ~a" fundefs)]
+    [(not (= (length (filter FunDef? fundefs)) (length fundefs)))
+     (error 'lookup-fundef "Wrong type - not list of FunDef: ~a" fundefs)]
+    [(empty? fundefs)
+     (error 'lookup-fundef "unknown function")]
+    [else
+     (if (symbol=? name (fundef-fun-name (first fundefs)))
+         (first fundefs)
+         (lookup-fundef name (rest fundefs)))]))
+
+
+;subst: FnWAE symbol number -> FnWAE
+(define (subst fnwae x val)
+  (cond
+    [(not (FnWAE? fnwae)) (error 'subst "Wrong type - not F1WAE: ~a" fnwae)]
+    [(not (symbol? x)) (error 'subst "Wrong type - not symbol: ~a" x)]
+    [(not (number? val)) (error 'subst "Wrong type - not number: ~a" val)]
+    [else
+     (type-case FnWAE fnwae
+       [num (n) fnwae]
+       [add (l r) (add (subst l x val) (subst r x val))]
+       [sub (l r) (sub (subst l x val) (subst r x val))]
+       [with (y i b) (with y
+                           (subst i x val)
+                           (if (symbol=? y x) b
+                               (subst b x val)))]
+       [id (s) (if (symbol=? s x) (num val) fnwae)]
+       [app (f a) (app f (map (lambda (e) (subst e x val)) a))])]))
+
+
+;interp: F1WAE list-of-FunDef -> number
+(define (interp fnwae fundefs)
+  (cond
+    [(not (FnWAE? fnwae)) (error 'interp "Wrong type - not FnWAE: ~a" fnwae)]
+    [(not (list? fundefs)) (error 'interp "Wrong type - not list: ~a" fundefs)]
+    [(not (= (length (filter FunDef? fundefs)) (length fundefs)))
+     (error 'interp "Wrong type - not list of FunDef: ~a" fundefs)]
+    [else
+     (type-case FnWAE fnwae
+       [num (n) n]
+       [add (l r) (+ (interp l fundefs) (interp r fundefs))]
+       [sub (l r) (- (interp l fundefs) (interp r fundefs))]
+       [with (x i b) (interp (subst b x (interp i fundefs)) fundefs)]
+       [id (s) (error 'interp "free variable")]
+       [app (f a)
+            (local
+              [(define a-fundef (lookup-fundef f fundefs))]
+              (unless (= (length a) (length (fundef-arg-name a-fundef)))
+                (error 'interp "wrong arity")
+                (interp (subst (fundef-body a-fundef)
+                             (fundef-arg-name a-fundef)
+                             (interp a fundefs)) fundefs)))])]))
+     
+ 
+(define (run str fundefs)
+  (interp (parse str) fundefs))
+
+(parse "{f 10}")
+(parse-defn '{deffun {f x} {+ x x}})
+
+(test (run "{f 10}" (list (parse-defn '{deffun {f x} {+ x x}}))) 20)
+(test (run "{f 1 2}" (list (parse-defn '{deffun {f x y} {+ x y}}))) 3)
+(test (run "{+ {f} {f}}" (list (parse-defn '{deffun {f} 5}))) 10)
+(test/exn (run "{f 1}" (list (parse-defn '{deffun {f x y} {+ x y}})))
+          "wrong arity")

@@ -91,4 +91,3 @@
               (interp (subst (fundef-body a-fundef)
                              (fundef-arg-name a-fundef)
                              (interp a fundefs)) fundefs))])]))
-(interp (parse '{with {y 2} {f 10}}) (cons (parse-fd '{deffun {f x} {+ 1 x}}) empty))
