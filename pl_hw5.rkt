@@ -180,7 +180,10 @@
        [record (r) (record (map (lambda (e) (cons (car e) (subst (cdr e) x val))) r))]
        [get (r z) (get (subst r x val) z)])]))
 
-
+; help function for interp get
+(define (pick-rec l x)
+  (if (symbol=? x (id-name (car (first l)))) (cdr (first l))
+      (pick-rec (rest l) x)))
 
 ;interp: FnWAE list-of-FunDef -> FnWAE-Value
 ; interprete multiple parameters of function by using recursive call of subst function
@@ -220,9 +223,7 @@
        [record (r) (recV (map (lambda (e) (cons (car e) (interp (cdr e) fundefs))) r))]
        [get (re x) (cond
                    [(for/or ([e (recV-recs (interp re fundefs))]) (symbol=? x (id-name (car e))))
-                      (for/and ([i (recV-recs (interp re fundefs))])
-                        #:final (symbol=? x (id-name (car i)))
-                        (cdr i))]
+                    (pick-rec (recV-recs (interp re fundefs)) x)]
                    [else
                       (error 'interp "no such field")])])]))
 
